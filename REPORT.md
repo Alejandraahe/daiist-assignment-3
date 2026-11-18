@@ -1,12 +1,12 @@
 # Assignment 3 Report
 
-- **Name**:
-- **Student ID**:
-- **Group**: [BBADBA 5A | BBADBA 5B | PPLEDBA 5A]
+- **Name**: Alejandra Hernandez
+- **Student ID**: 20122
+- **Group**: BBADBA 5A 
 
 ## Use case
 
-*Who asks, what they do with the answer, and what a wrong answer costs compared with "I don't know".*
+A pharmacy assistant in a community pharmacy in Spain. Patients taking blood thinnersask them questions at the counter, such as “I forgot a dose, what do I do?” or “Can I take ibuprofen with it?” With the answer and with the citation to the official EMA leaflet, they answer the patient or decide to send them to the pharmacist or doctor. Th cost of a wrong answer vs "I don’t know, is that a wrong answer can cause major bleeding or a stroke. “I don’t know” only costs a few minutes while the assistant asks the pharmacist. So the system must refuse rather than guess.
 
 ## Corpus
 
