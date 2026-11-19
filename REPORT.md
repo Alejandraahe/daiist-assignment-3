@@ -69,7 +69,22 @@ Two examples:
 
 ## Adding a document
 
-*What happens when a document is already indexed. The unanswerable question, the document you added, the answer before and after.*
+If the document is already indexed
+Every chunk's id is a hash of its text. `add_document` runs the file through the same pipeline as `index.py` (it imports `chunk_file` and `embed_and_store`), then embeds only chunks whose id is not stored yet. So the same file twice embeds nothing and answers "already indexed and unchanged". If a file with the same name has changed (e.g. a new EMA version of the leaflet), its old chunks are deleted and only the new ones are embedded, so the index always holds the latest version without duplicates.
+
+Demo
+Unanswerable question q27: "What is the dose of edoxaban (Lixiana) for atrial fibrillation?" Document added: the EMA product information of Lixiana (edoxaban), downloaded to `corpus/lixiana.pdf`, which produced 72 new chunks.
+
+- Before:
+"The product information in the corpus does not cover this; please ask the pharmacist or doctor." (1 search, no sources)
+- Add:
+the agent asked for approval before running `add_document`. When I answered `n`, nothing was added; with `y`, the document was added.
+- After:
+"For the prevention of stroke and systemic embolism in non-valvular atrial fibrillation, the recommended dose is 60 mg edoxaban once daily [lixiana p.3 SmPC 4.2]. The recommended dose is 30 mg once daily in patients with one or more of: moderate or severe renal impairment (CrCl 15–50 mL/min), low body weight ≤ 60 kg, or concomitant use of ciclosporin, dronedarone, erythromycin or ketoconazole [lixiana p.3 SmPC 4.2]."
+- Adding it again:
+"'lixiana' is already indexed and unchanged… Nothing was embedded."
+
+Note: the evaluation results in `eval/` were produced before Lixiana was added, so q27 counts there as a correct refusal.
 
 ## Harness and guardrails
 

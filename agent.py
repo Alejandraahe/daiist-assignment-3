@@ -116,6 +116,8 @@ def is_refusal(text: str) -> bool:
 
 def check_citations(text: str, trace: list[dict]) -> tuple[str, str | None]:
     """Return (answer to show, reason it was blocked or None)."""
+    if any(step["tool"] == "add_document" for step in trace):
+        return text, None      # an index operation, not a medical answer: report its outcome as it is
     retrieved = set().union(*(labels_in(step["output"]) for step in trace if step["tool"] == "search"))
     cited = labels_in(text)
     invented = sorted(cited - retrieved)
