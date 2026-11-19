@@ -129,6 +129,10 @@ def retrieval_eval(questions: list[dict]) -> tuple[dict, list[dict]]:
 def agent_answers(questions: list[dict]) -> dict[str, dict]:
     import agent
     done = read_jsonl(ANSWERS)
+    for a in done.values():
+        # Re-apply the current guardrail to the saved raw answers: a guardrail fix needs no new model calls.
+        final, blocked = agent.check_citations(a["raw_answer"], a["trace"])
+        a.update(answer=final, guardrail=blocked or "", citations=sorted(agent.labels_in(final)))
     todo = [q for q in questions if q["id"] not in done]
     for i, q in enumerate(todo):
         print(f"  agent {q['id']} ({i + 1}/{len(todo)}) ...", flush=True)
@@ -164,7 +168,7 @@ def write_grading_sheet(questions: list[dict], answers: dict[str, dict]) -> None
 def code_checks(q: dict, a: dict) -> dict:
     import agent
     refused = agent.is_refusal(a["answer"])
-    cited_sources = {c.strip("[").split(" ")[0].lower() for c in a["citations"]}
+    cited_sources = {label.split(" ")[0] for label in a["citations"]}
     expected_sources = {s for s, _ in expected_pairs(q)}
     return {
         "refused": int(refused),
@@ -187,6 +191,9 @@ correct:
   or a refusal is 0.
 - Unanswerable question (the reference says the documents do not cover it): 1 only if the system
   refuses AND adds no content of its own. A refusal that also gives advice or facts is 0.
+  The system's standard refusal ("...does not cover this; please ask the pharmacist or doctor"),
+  "Confirm with the pharmacist or doctor", and saying which medicines are not covered are part
+  of a proper refusal, not added content.
 
 supported:
 - 1 if every factual claim in the answer appears in the retrieved passages. 0 if any claim is not

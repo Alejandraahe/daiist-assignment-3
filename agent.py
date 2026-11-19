@@ -40,7 +40,8 @@ MAX_TOOL_CALLS = 6
 
 REFUSAL = "The product information in the corpus does not cover this; please ask the pharmacist or doctor."
 REFUSAL_MARKERS = ["does not cover", "do not cover", "not covered", "no cubre", "no cubren", "no incluye"]
-CITATION = re.compile(r"\[([a-z0-9_\-]+) p\.(\d+) ([^\]]+)\]", re.IGNORECASE)
+BRACKET = re.compile(r"\[([^\[\]]+)\]")
+LABEL = re.compile(r"^\s*([a-z0-9_\-]+) p\.(\d+) (.+?)\s*$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------- model
@@ -95,15 +96,28 @@ async def corpus_server():
 
 # ---------------------------------------------------------------- guardrail
 
+def labels_in(text: str) -> set[str]:
+    """Citation labels in a text, normalised. One bracket may hold several, as in
+    [eliquis p.12 SmPC 4.5, eliquis p.44 SmPC 4.5]."""
+    labels = set()
+    for bracket in BRACKET.findall(text):
+        for part in re.split(r"[;,]\s*(?=[a-z0-9_\-]+ p\.\d)", bracket, flags=re.IGNORECASE):
+            match = LABEL.match(part)
+            if match:
+                labels.add(f"{match.group(1)} p.{match.group(2)} {match.group(3)}".lower())
+    return labels
+
+
 def is_refusal(text: str) -> bool:
-    return any(marker in text.lower() for marker in REFUSAL_MARKERS)
+    """A refusal says the corpus does not cover the question and cites nothing.
+    ("Pradaxa is not covered" next to a cited answer about Eliquis is not a refusal.)"""
+    return not labels_in(text) and any(marker in text.lower() for marker in REFUSAL_MARKERS)
 
 
 def check_citations(text: str, trace: list[dict]) -> tuple[str, str | None]:
     """Return (answer to show, reason it was blocked or None)."""
-    retrieved = {m.group(0).lower() for step in trace if step["tool"] == "search"
-                 for m in CITATION.finditer(step["output"])}
-    cited = {m.group(0).lower() for m in CITATION.finditer(text)}
+    retrieved = set().union(*(labels_in(step["output"]) for step in trace if step["tool"] == "search"))
+    cited = labels_in(text)
     invented = sorted(cited - retrieved)
     if invented:
         return REFUSAL, f"blocked: cited passages that search never returned: {', '.join(invented)}"
@@ -140,7 +154,7 @@ async def ask(question: str, session: ClientSession, mcp_tools) -> dict:
         "answer": final,
         "raw_answer": raw,
         "guardrail": blocked or "",
-        "citations": sorted({m.group(0) for m in CITATION.finditer(final)}),
+        "citations": sorted(labels_in(final)),
         "trace": trace,
         "model_calls": len(ai_messages),
         "input_tokens": sum(u.get("input_tokens", 0) for u in usage),
