@@ -61,11 +61,40 @@ Two examples:
 
 ## Retrieval
 
-*Hit rate at 1/3/5 per design, words added to the prompt, the design you chose.*
+Hit rate on the 26 answerable questions (a hit means the expected document *and* section are in the top k; a multi question needs both of its passages). Every question was embedded once and the same vectors were used for all designs.
+
+| design | hit@1 | hit@3 | hit@5 | words per chunk | words added to the prompt (5 chunks) |
+|---|---|---|---|---|---|
+| fixed (300-word windows, 50 overlap) | **42%** | 65% | 81% | 299 | ~1,495 |
+| structured (by section, header line) | 23% | **69%** | 81% | 231 | ~1,155 |
+| structured + medicine filter | 23% | 69% | 81% | 231 | ~1,155 |
+
+Choice: structured
+The server returns 5 chunks to the agent, so hit@5 is the number that matters, and there the two designs tie (81%). Structured is slightly better at k=3, adds about 23% fewer words to the prompt, and each
 
 ## Tools and subagent
 
-*Your tools' descriptions, one search result, the subagent's instructions, one transcript from your editor.*
+Tools
+ (`server.py`, MCP over stdio, registered as `corpus` in `.mcp.json` and `.vscode/mcp.json`). The docstring is what the model reads:
+
+- `search(query)`: "Search the official EMA product information (SmPC and patient leaflet) of the anticoagulants in the corpus: Eliquis (apixaban), Xarelto (rivaroxaban) and Pradaxa (dabigatran), plus any document added later. Use it for any question about these medicines: doses, missed doses, kidney or liver problems, contraindications, interactions, pregnancy, side effects, overdose, storage... Returns the 5 most relevant passages. Each starts with a citation such as [eliquis p.4 SmPC 4.2]; cite it after every claim. If no passage answers the question, the corpus does not cover it: say so." Only the query is embedded; the corpus vectors are loaded from `index/`.
+- `add_document(path)`: "Add a PDF of product information to the searchable corpus... only chunks that are not stored yet are embedded... Changes the index: only call it when the user asks."
+
+One search result
+(from `check.py`, query "I forgot my Eliquis last night, can I take two tablets this morning?"):
+
+```
+[eliquis p.143 Leaflet 3] (distance 0.169)
+Eliquis | Eliquis 2.5 mg film-coated tablets | Leaflet 3 How to take Eliquis
+- Changing from treatment with anticoagulant containing vitamin K antagonist (e.g., warfarin) to Eliquis ...
+... If you forget to take Eliquis - If you miss a morning dose, take it as soon as you remember ... A missed evening dose can only be taken during the same evening. Do not take two doses the next morning ...
+```
+
+Subagent
+(`.claude/agents/corpus-researcher.md`): its only tool is `search`, listed under both names (`mcp__corpus__search` for Claude Code, `corpus/search` for VS Code). Its instructions: short queries with the medicine and topic, at most 3 searches; read every passage to the end; answer only from the passages; cite every claim; never transfer a fact between medicines; otherwise use the fixed refusal sentence; at most 5 sentences, in the language of the question.
+
+Problems I had to fix to make it work in Copilot:
+1. The `corpus` MCP server was not running the first time, so the subagent had no tools and
 
 ## Adding a document
 
@@ -88,19 +117,83 @@ Note: the evaluation results in `eval/` were produced before Lixiana was added, 
 
 ## Harness and guardrails
 
-*Your AGENTS.md rules, the approval step, and your extra guardrail with one case where it fired.*
+`agent.py` uses LangChain `create_agent` on Gemini (`gemini-3.5-flash-lite`), starts `server.py` over MCP, and sends `AGENTS.md` as the system prompt.
+
+AGENTS.md rules =
+(each with its reason in the file): (1) answer only from the search results; (2) cite every claim; (3) use a fixed refusal sentence when the corpus does not cover the question; (4) never apply a fact about one medicine to another; (5) copy numbers exactly, never calculate; (6) end patient-specific answers with "Confirm with the pharmacist or doctor"; (7) answer in the language of the question; (8) use add_document only when the user asks.
+
+Approval step (in code, not in the prompt)=
+Before `add_document` runs, the terminal asks "Approve? [y/N]". Only "y" lets it run; with no terminal (evaluation, GitHub Actions) it is refused automatically. When I answered "n", the document was not added; with "y" it was added. This does not depend on the model obeying rule 8.
+
+Call limits =
+At most 8 model calls and 6 tool calls per question (LangChain middleware), against loops and quota burn.
+
+My extra guardrail: citation check = 
+After the agent answers, the code checks that every citation label in the answer is one that `search` actually returned in that run. An invented citation, or an answer with no citation that is not a refusal, is replaced by the refusal sentence.
+
+- A case where it fired correctly (q04, pregnancy and Eliquis):
+the model cited `[eliquis p.13 SmPC 4.6]`, but the passage had been returned as `[eliquis p.13 SmPC 4.5]` (the chunk spans 4.5 and 4.6 and is labelled with its first section). The guardrail blocked it, and the user got the refusal. Safe, but it turned a correct answer into a wrong refusal.
+- Two bugs it had, which I found through the evaluation:
+(1) the model often put two labels in one bracket, `[eliquis p.12 SmPC 4.5, eliquis p.44 SmPC 4.5]`, which my first version read as one unknown label, so it blocked 10 of 32 good answers; after splitting brackets, it blocks 1 of 32. (2) It also blocked the agent's message after `add_document` ("the document was not added"), because that message has no citation; it now skips index operations.
 
 ## Evaluation
 
-*Code checks, the judge's rubric, your agreement with the judge, and results: correct, unsupported, correct refusals, wrong refusals.*
+`main.py evaluate` runs the agent on all 32 questions, then checks what code can check and sends the rest to an LLM judge.
+
+Code checks:
+whether the answer is a refusal (fixed sentence, no citation) and whether that was right for the question kind; whether every citation label was really returned by `search` in that run; whether the answer cites the expected document.
+
+Judge rubric
+(Gemini, temperature 0, with the retrieved passages as evidence):
+- *correct*: for answerable questions, 1 if the key fact a patient needs is right and nothing is wrong; missing secondary details is fine; a wrong number, wrong medicine or a refusal is 0. For unanswerable questions, 1 only if it refuses without adding content of its own (the standard refusal and "confirm with the pharmacist or doctor" are part of a refusal).
+- *supported*: 1 if every factual claim is in the retrieved passages.
+
+My grades vs the judge
+(22 answers, graded before reading the verdicts): agreement 91% on *correct*, 100% on *supported*. Disagreements: **q02**, where I graded the answer wrong because it says Eliquis can be "restarted as soon as possible" after surgery and never says that recent eye surgery is a contraindication; the judge accepted it because the sentence is in the retrieved text. And **q30**: [your reason in one sentence]. The judge is too lenient on exactly the kind of answer that is dangerous: true sentences that do not answer the question.
+
+Results
+(after fixing the guardrail bug described above):
+
+| | result |
+|---|---|
+| Correct (judge) | 97% (31/32) |
+| Supported by retrieved text (judge) | 100% |
+| Rightly refused (unanswerable) | 6/6 |
+| Made things up (unanswerable but answered) | 0/6 |
+| Wrongly refused (answerable) | 1/26 |
+| Cited the expected document | 25/25 |
+
+First run, before the fix: 53% correct, 13/26 wrong refusals, because my citation guardrail blocked 10 good answers.
 
 ## Failures
 
-*Failed questions by cause, with counts, and what to fix first.*
+Failures counted from my own grades and the judge's together:
+
+| question | what happened | cause |
+|---|---|---|
+| q02 (eye surgery, Eliquis) | Said Eliquis can be restarted after surgery; never said recent eye surgery is a contraindication | **Retrieval miss**: the search "Eliquis eye surgery operation" did not return SmPC 4.3, so the agent answered from a 4.4 passage about restarting after surgery |
+| q04 (pregnancy, Eliquis) | Refused | **Wrong refusal**: the answer was right, but it cited the chunk's second section (4.6) while the chunk was labelled with its first (4.5), so my guardrail blocked it |
+| q30 | [your view] | [your category] |
+
+By cause: retrieval miss 1, wrong refusal 1, wrong answer from the right passage 0 in the evaluation (1 in the Copilot transcript: the missed-dose rules merged), unsupported claim 0, bad test question 0. Not counted as a failure: q25 answered in Spanish to an English question (rule 7), with correct facts.
+
+Retrieval alone missed at k=5 on q02, q08, q10, q16 and q24, but the agent recovered on four of them by writing its own queries. Only q02 stayed wrong.
+
+What to fix first: q02
+Because it is the dangerous one. A "can patient X take medicine Y" question should always also search the contraindications (SmPC 4.3) of that medicine; this could be a rule in AGENTS.md or a second, automatic search in the harness. Second: label each chunk with every section it contains, so a correct citation like q04's is not blocked.
 
 ## Decision
 
-*Would you let users rely on it, for what, with which safeguard? Cost and latency per question.*
+Not as the only source, but yes as a lookup aid =
+A pharmacy assistant could use it to find the right passage of the official leaflet quickly, read it, and answer the patient. It should not be used as a source of answers to repeat without reading the citation.
+
+Why: it never made things up on the unanswerable questions (0/6) and every claim was supported (100%), so a refusal can be trusted. But q02 shows the dangerous case: a true, cited sentence that does not answer the question ("can he take it after eye surgery?"), and the LLM judge missed it. A 97% score from the judge overestimates the quality on exactly the questions where a mistake costs most.
+
+Safeguards:
+(1) the assistant opens the cited passage before answering; (2) for "can this patient take it?" questions, always check SmPC 4.3 (contraindications), by rule or with an automatic second search; (3) keep the citation guardrail and the refusal sentence; (4) human spot checks, since the judge alone is not enough.
+
+Cost and latency per question:
+5,068 agent tokens and 10.1 s on average (2.2 model calls, 1.3 searches), plus 3,025 tokens for the judge during evaluation. Everything ran on the Gemini free tier (gemini-3.5-flash-lite for the agent and the judge, gemini-embedding-2 for embeddings).
 
 ## AI use
 
