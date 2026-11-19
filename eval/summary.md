@@ -24,3 +24,9 @@
 - Agent time: 10.1 s on average
 - Model calls: 2.2, tool calls: 1.3 on average
 - Judge tokens: 3025 on average
+
+## Judge vs your grades (22 answers)
+
+- Agreement on correct: 91%
+- Agreement on supported: 100%
+- Disagreements: q02, q30
